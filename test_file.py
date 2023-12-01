@@ -47,10 +47,12 @@ def display_spectrogram(spectrogram, sr, hop_length, save_path):
     plt.title('Spectrogram')
     plt.savefig(save_path)
 
-def load_data(clean_speech_folder, noisy_speech_folder, masks_folder, data_folder):
+def load_data(clean_speech_folder, noisy_speech_folder):
     db_interval = -60
     max_height = 0
     max_width = 0
+    spectrograms = []
+    masks = []
 
     # Find the dimensions of the largest image for padding
     for clean_file_name in os.listdir(clean_speech_folder):
@@ -75,6 +77,9 @@ def load_data(clean_speech_folder, noisy_speech_folder, masks_folder, data_folde
             # Add padding to the clean speech spectrogram
             clean_speech_spectrogram = np.pad(clean_speech_spectrogram, ((0, pad_height), (0, pad_width)), mode='constant')
 
+            # Normalize clean speech spectrogram to [0, 1]
+            clean_speech_spectrogram = (clean_speech_spectrogram - clean_speech_spectrogram.min()) / (clean_speech_spectrogram.max() - clean_speech_spectrogram.min())
+
             # Create a binary mask from the clean speech file
             mask = (clean_speech_spectrogram > db_interval).astype(np.float32)
 
@@ -88,43 +93,67 @@ def load_data(clean_speech_folder, noisy_speech_folder, masks_folder, data_folde
                     # Add padding to the noisy speech spectrogram
                     noisy_speech_spectrogram = np.pad(noisy_speech_spectrogram, ((0, pad_height), (0, pad_width)), mode='constant')
 
-                    # Save the noisy spectrogram data
-                    output_file_name = noisy_file_name.replace(".wav", "_spectrogram.png")
-                    output_path = os.path.join(data_folder, output_file_name)
-                    plt.imsave(output_path, noisy_speech_spectrogram, cmap='gray')
+                    # Normalize noisy speech spectrogram to [0, 1]
+                    noisy_speech_spectrogram = (noisy_speech_spectrogram - noisy_speech_spectrogram.min()) / (noisy_speech_spectrogram.max() - noisy_speech_spectrogram.min())
 
-                    # Save the binary mask
-                    output_file_name = noisy_file_name.replace(".wav", "_mask.png")
-                    output_path = os.path.join(masks_folder, output_file_name)
-                    plt.imsave(output_path, mask, cmap='gray')
+                    # Store the results in arrays
+                    spectrograms.append(noisy_speech_spectrogram)
+                    masks.append(mask)
 
-    return max_width, max_height
+    return np.array(spectrograms), np.array(masks)
 
 def unet_model(input_shape):
-    inputs = tf.keras.Input(shape=input_shape)
-    
-    # Define the encoder
+    inputs = keras.Input(shape=input_shape)
+
+    # Encoder
     conv1 = layers.Conv2D(64, 3, activation='relu', padding='same')(inputs)
     conv1 = layers.Conv2D(64, 3, activation='relu', padding='same')(conv1)
     pool1 = layers.MaxPooling2D(pool_size=(2, 2))(conv1)
 
-    # Define the decoder
     conv2 = layers.Conv2D(128, 3, activation='relu', padding='same')(pool1)
     conv2 = layers.Conv2D(128, 3, activation='relu', padding='same')(conv2)
-    up1 = layers.UpSampling2D(size=(2, 2))(conv2)
+    pool2 = layers.MaxPooling2D(pool_size=(2, 2))(conv2)
 
-    # Add more encoder-decoder blocks as needed
+    # Bottleneck
+    conv3 = layers.Conv2D(256, 3, activation='relu', padding='same')(pool2)
+    conv3 = layers.Conv2D(256, 3, activation='relu', padding='same')(conv3)
 
-    outputs = layers.Conv2D(1, 1, activation='softmax')(up1)
+    # Decoder
+    up1 = layers.UpSampling2D(size=(2, 2))(conv3)
+    concat1 = layers.concatenate([conv2, up1], axis=-1)
+    conv4 = layers.Conv2D(128, 3, activation='relu', padding='same')(concat1)
+    conv4 = layers.Conv2D(128, 3, activation='relu', padding='same')(conv4)
+
+    up2 = layers.UpSampling2D(size=(2, 2))(conv4)
+    concat2 = layers.concatenate([conv1, up2], axis=-1)
+    conv5 = layers.Conv2D(64, 3, activation='relu', padding='same')(concat2)
+    conv5 = layers.Conv2D(64, 3, activation='relu', padding='same')(conv5)
+
+    # Output layer
+    outputs = layers.Conv2D(1, 1, activation='sigmoid')(conv5)
+
     model = models.Model(inputs=inputs, outputs=outputs)
-
     return model
 
-width, height = load_data("clean_speech", "noisy_speech", "masks", "data")
-data_train, data_val, mask_train, mask_val = train_test_split(
-    data, masks test_size=0.2, random_state=42
-)
+# Load the data
+spectrograms, masks = load_data("clean_speech", "noisy_speech")
+width, height = spectrograms.shape[1], spectrograms.shape[2]
 
+# Split the data into training and validation sets
+data_train, data_val, masks_train, masks_val = train_test_split(
+    spectrograms, masks, test_size = 0.2, random_state = 42
+)
+print(data_train)
+
+# Create and compile the UNet model
 model = unet_model((width, height, 1))
 model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
-model.fit()
+
+# Fit the model to the data
+model.fit(
+    data_train,
+    masks_train,
+    epochs = 10,
+    batch_size = 32,
+    validation_data = (data_val, masks_val)
+)

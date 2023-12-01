@@ -7,8 +7,10 @@ import numpy as np
 import os
 from scipy.io import wavfile
 from sklearn.model_selection import train_test_split
+import re
 # import tensorflow as tf
-# from tensorflow.keras import layers, models
+# from tensorflow import keras
+# from keras import layers, models
 
 # Function to read a .wav file into a spectrogram
 def wav_to_spectrogram(file_path, n_fft=2048, hop_length=512, save_phase=False):
@@ -23,11 +25,11 @@ def wav_to_spectrogram(file_path, n_fft=2048, hop_length=512, save_phase=False):
     spectrogram = librosa.feature.melspectrogram(S=magnitude**2, sr=sr, n_fft=n_fft, hop_length=hop_length)
     log_spectrogram = librosa.power_to_db(spectrogram, ref=np.max)
 
-    # Only return spectrogram for training
+    # Only return spectrogram during training
     if save_phase:
         return log_spectrogram, sr, magnitude, phase
     else:
-        return log_spectrogram
+        return log_spectrogram, sr
 
 # Function to convert a spectrogram back into a .wav file using saved phase information
 def spectrogram_to_wav(spectrogram, magnitude, phase, sr, hop_length=512):
@@ -39,71 +41,40 @@ def spectrogram_to_wav(spectrogram, magnitude, phase, sr, hop_length=512):
 
     return reconstructed_audio
 
+def display_spectrogram(spectrogram, sr, hop_length, save_path):
+    plt.figure(figsize=(10, 4))
+    librosa.display.specshow(spectrogram, sr=sr, hop_length=hop_length, x_axis='time', y_axis='mel')
+    plt.colorbar(format='%+2.0f dB')
+    plt.title('Spectrogram')
+    plt.savefig(save_path)
 
-# Function to fetch data and prepare it for training
-def load_and_preprocess_data(clean_folder, noise_folder, noisy_folder):
-    source_data = []
-    mixed_data = []
-    labels = []
-    max_frames = 0
+def load_data(clean_speech_folder, noisy_speech_folder, masks_folder, data_folder):
+    db_interval = -60
 
-    # Load clean speech data
-    for filename in os.listdir(clean_folder):
-        if filename.endswith(".wav"):
-            clean_path = os.path.join(clean_folder, filename)
-            file_number = filename[5:-4]
-            noisy_filenames = [f"noisy{file_number}_SNRdb_{snr}_clnsp{file_number}.wav" for snr in [0.0, 10.0, 20.0, 30.0, 40.0]]
+    for clean_file_name in os.listdir(clean_speech_folder):
+        if clean_file_name.endswith(".wav"):
+            # Load the clean speech file
+            clean_speech_path = os.path.join(clean_speech_folder, clean_file_name)
+            clean_speech_spectrogram, _ = wav_to_spectrogram(clean_speech_path)
 
-            for noisy_filename in noisy_filenames:
-                noisy_path = os.path.join(noisy_folder, noisy_filename)
+            # Create a binary mask from the clean speech file
+            mask = (clean_speech_spectrogram > db_interval).astype(np.float32)
 
-                clean_spec = wav_to_spectrogram(clean_path)
-                noisy_spec = wav_to_spectrogram(noisy_path)
+            # Iterate through files with corresponding clean speech file at all SNRs
+            for noisy_file_name in os.listdir(noisy_speech_folder):
+                if noisy_file_name.endswith(clean_file_name):
+                    # Load the noisy speech file
+                    noisy_speech_path = os.path.join(noisy_speech_folder, noisy_file_name)
+                    noisy_speech_spectrogram, _ = wav_to_spectrogram(noisy_speech_path)
 
-                source_data.append(clean_spec)
-                mixed_data.append(noisy_spec)
-                labels.append(1)  # Label 1 for clean speech
+                    # Save the noisy spectrogram data
+                    output_file_name = noisy_file_name.replace(".wav", "_spectrogram.png")
+                    output_path = os.path.join(data_folder, output_file_name)
+                    plt.imsave(output_path, noisy_speech_spectrogram, cmap='gray')
 
-                # Update max_frames if necessary
-                max_frames = max(max_frames, clean_spec.shape[1], noisy_spec.shape[1])
+                    # Save the binary mask
+                    output_file_name = noisy_file_name.replace(".wav", "_mask.png")
+                    output_path = os.path.join(masks_folder, output_file_name)
+                    plt.imsave(output_path, mask, cmap='gray')
 
-    # Load background noise data
-    for filename in os.listdir(noise_folder):
-        if filename.endswith(".wav"):
-            noise_path = os.path.join(noise_folder, filename)
-
-            noise_spec = wav_to_spectrogram(noise_path)
-
-            source_data.append(noise_spec)
-            mixed_data.append(noise_spec)
-            labels.append(0)  # Label 0 for background noise
-
-            # Update max_frames if necessary
-            max_frames = max(max_frames, noise_spec.shape[1])
-
-    # Perform dynamic padding
-    source_data = [np.pad(spec, ((0, 0), (0, max_frames - spec.shape[1]))) for spec in source_data]
-    mixed_data = [np.pad(spec, ((0, 0), (0, max_frames - spec.shape[1]))) for spec in mixed_data]
-
-    source_data = np.array(source_data)
-    mixed_data = np.array(mixed_data)
-    labels = np.array(labels)
-
-    return source_data, mixed_data, labels
-
-# Read files into lists
-clean_folder = "MS-SNSD/CleanSpeech_training"
-noise_folder = "MS-SNSD/Noise_training"
-noisy_folder = "MS-SNSD/NoisySpeech_training"
-source_data, mixed_data, labels = load_and_preprocess_data(clean_folder, noise_folder, noisy_folder)
-
-index_to_visualize = 0
-
-# Plot the spectrogram
-plt.figure(figsize=(10, 4))
-plt.imshow(source_data[index_to_visualize], cmap='viridis', aspect='auto', origin='lower')
-plt.title(f"Spectrogram for Index {index_to_visualize}")
-plt.xlabel("Time Frames")
-plt.ylabel("Frequency Bins")
-plt.colorbar(format="%+2.0f dB")
-plt.savefig('spectrogram_plot.png')  # Save the plot to a file
+load_data("CleanSpeech", "NoisySpeech", "Masks", "Data")

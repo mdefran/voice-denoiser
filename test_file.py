@@ -63,6 +63,10 @@ def load_data(clean_speech_folder, noisy_speech_folder):
             max_height = max(max_height, height)
             max_width = max(max_width, width)
 
+    # Update to nearest power of 2 for model compatability
+    target_height = 2 ** int(np.ceil(np.log2(max_height)))
+    target_width = 2 ** int(np.ceil(np.log2(max_width)))
+
     # Iterate through source files
     for clean_file_name in os.listdir(clean_speech_folder):
         if clean_file_name.endswith(".wav"):
@@ -71,8 +75,8 @@ def load_data(clean_speech_folder, noisy_speech_folder):
             clean_speech_spectrogram, _ = wav_to_spectrogram(clean_speech_path)
 
             # Calculate padding
-            pad_height = max_height - clean_speech_spectrogram.shape[0]
-            pad_width = max_width - clean_speech_spectrogram.shape[1]
+            pad_height = target_height - clean_speech_spectrogram.shape[0]
+            pad_width = target_width - clean_speech_spectrogram.shape[1]
 
             # Add padding to the clean speech spectrogram
             clean_speech_spectrogram = np.pad(clean_speech_spectrogram, ((0, pad_height), (0, pad_width)), mode='constant')
@@ -103,36 +107,58 @@ def load_data(clean_speech_folder, noisy_speech_folder):
     return np.array(spectrograms), np.array(masks)
 
 def unet_model(input_shape):
-    inputs = keras.Input(shape=input_shape)
+    inputs = keras.Input(input_shape)
 
-    # Encoder
-    conv1 = layers.Conv2D(64, 3, activation='relu', padding='same')(inputs)
-    conv1 = layers.Conv2D(64, 3, activation='relu', padding='same')(conv1)
-    pool1 = layers.MaxPooling2D(pool_size=(2, 2))(conv1)
+    # Downsample
+    x = layers.Conv2D(64, 3, strides=2, padding="same")(inputs)
+    x = layers.BatchNormalization()(x)
+    x = keras.activations.relu(x)
 
-    conv2 = layers.Conv2D(128, 3, activation='relu', padding='same')(pool1)
-    conv2 = layers.Conv2D(128, 3, activation='relu', padding='same')(conv2)
-    pool2 = layers.MaxPooling2D(pool_size=(2, 2))(conv2)
+    previous_block_activation = x  # Set aside residual
 
-    # Bottleneck
-    conv3 = layers.Conv2D(256, 3, activation='relu', padding='same')(pool2)
-    conv3 = layers.Conv2D(256, 3, activation='relu', padding='same')(conv3)
+    # Blocks 1, 2, 3 are identical: downsampling
+    for filters in [128, 256, 512]:
+        x = layers.Activation("relu")(x)
+        x = layers.SeparableConv2D(filters, 3, padding="same")(x)
+        x = layers.BatchNormalization()(x)
 
-    # Decoder
-    up1 = layers.UpSampling2D(size=(2, 2))(conv3)
-    concat1 = layers.concatenate([conv2, up1], axis=-1)
-    conv4 = layers.Conv2D(128, 3, activation='relu', padding='same')(concat1)
-    conv4 = layers.Conv2D(128, 3, activation='relu', padding='same')(conv4)
+        x = layers.Activation("relu")(x)
+        x = layers.SeparableConv2D(filters, 3, padding="same")(x)
+        x = layers.BatchNormalization()(x)
 
-    up2 = layers.UpSampling2D(size=(2, 2))(conv4)
-    concat2 = layers.concatenate([conv1, up2], axis=-1)
-    conv5 = layers.Conv2D(64, 3, activation='relu', padding='same')(concat2)
-    conv5 = layers.Conv2D(64, 3, activation='relu', padding='same')(conv5)
+        x = layers.MaxPooling2D(3, strides=2, padding="same")(x)
 
-    # Output layer
-    outputs = layers.Conv2D(1, 1, activation='sigmoid')(conv5)
+        # Project residual
+        residual = layers.Conv2D(filters, 1, strides=2, padding="same")(
+            previous_block_activation
+        )
+        x = layers.add([x, residual])  # Add back residual
+        previous_block_activation = x  # Set aside next residual
 
-    model = models.Model(inputs=inputs, outputs=outputs)
+    # Upsample
+    for filters in [512, 256, 128, 64]:
+        x = layers.Activation("relu")(x)
+        x = layers.Conv2DTranspose(filters, 3, padding="same")(x)
+        x = layers.BatchNormalization()(x)
+
+        x = layers.Activation("relu")(x)
+        x = layers.Conv2DTranspose(filters, 3, padding="same")(x)
+        x = layers.BatchNormalization()(x)
+
+        x = layers.UpSampling2D(2)(x)
+
+        # Project residual
+        residual = layers.UpSampling2D(2)(previous_block_activation)
+        residual = layers.Conv2D(filters, 1, padding="same")(residual)
+
+        x = layers.add([x, residual])  # Add back residual
+        previous_block_activation = x  # Set aside next residual
+
+    # Add a per-pixel classification layer
+    outputs = layers.Conv2D(1, 3, activation="sigmoid", padding="same")(x)
+
+    # Define the model
+    model = keras.Model(inputs, outputs)
     return model
 
 # Load the data

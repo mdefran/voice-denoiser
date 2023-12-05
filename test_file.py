@@ -10,6 +10,7 @@ from sklearn.model_selection import train_test_split
 import tensorflow as tf
 from tensorflow import keras
 from keras import layers, models
+print("Num GPUs Available: ", len(tf.config.experimental.list_physical_devices('GPU')))
 
 # Function to read a .wav file into a spectrogram
 def wav_to_spectrogram(file_path, n_fft=2048, hop_length=512, save_phase=False):
@@ -180,6 +181,54 @@ model.fit(
     data_train,
     masks_train,
     epochs = 10,
-    batch_size = 32,
+    batch_size = 16,
     validation_data = (data_val, masks_val)
 )
+
+model.save("first_attempt.keras")
+
+# Function to apply the trained model to new data
+def apply_model_to_new_data(model, file_path, target_height, target_width, db_interval=-60):
+    # Convert the new audio file to a spectrogram
+    spectrogram, sr, magnitude, phase = wav_to_spectrogram(file_path, save_phase=True)
+
+    # Calculate padding
+    pad_height = target_height - spectrogram.shape[0]
+    pad_width = target_width - spectrogram.shape[1]
+
+    # Add padding to the spectrogram
+    spectrogram_padded = np.pad(spectrogram, ((0, pad_height), (0, pad_width)), mode='constant')
+
+    # Normalize the spectrogram to [0, 1]
+    spectrogram_normalized = (spectrogram_padded - spectrogram_padded.min()) / (spectrogram_padded.max() - spectrogram_padded.min())
+
+    # Reshape the spectrogram for model input
+    input_data = np.expand_dims(spectrogram_normalized, axis=-1)
+    input_data = np.expand_dims(input_data, axis=0)  # Add batch dimension
+
+    # Apply the trained model
+    predicted_mask = model.predict(input_data)[0, :, :, 0]
+
+    # Post-process the predicted mask if needed (e.g., thresholding)
+    threshold = 0.5
+    predicted_mask_binary = (predicted_mask > threshold).astype(np.float32)
+
+    # Optionally, convert the predicted binary mask back to a time-domain signal using saved phase information
+    reconstructed_audio = spectrogram_to_wav(predicted_mask_binary, magnitude, phase, sr)
+
+    return predicted_mask_binary, reconstructed_audio, magnitude, phase, sr
+
+# Example usage:
+file_path = "MS-SNSD/CleanSpeech_training/clnsp1.wav"
+predicted_mask, reconstructed_audio, magnitude, phase, sr = apply_model_to_new_data(model, file_path, 128, 512)
+
+# Apply the predicted binary mask to the magnitude and phase
+# Ensure that predicted_mask has the same shape as magnitude
+applied_mask = np.resize(predicted_mask, magnitude.shape) * magnitude
+
+# Reconstruct the audio using the masked magnitude and original phase
+reconstructed_audio = spectrogram_to_wav(applied_mask, magnitude, phase, sr)
+
+# Save the reconstructed audio as a .wav file using scipy.io.wavfile
+output_file_path = "output_reconstructed.wav"
+wavfile.write(output_file_path, sr, reconstructed_audio.astype(np.int16))

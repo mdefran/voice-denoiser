@@ -10,7 +10,6 @@ from sklearn.model_selection import train_test_split
 import tensorflow as tf
 from tensorflow import keras
 from keras import layers, models
-print("Num GPUs Available: ", len(tf.config.experimental.list_physical_devices('GPU')))
 
 # Function to read a .wav file into a spectrogram
 def wav_to_spectrogram(file_path, n_fft=2048, hop_length=512, save_phase=False):
@@ -23,13 +22,13 @@ def wav_to_spectrogram(file_path, n_fft=2048, hop_length=512, save_phase=False):
 
     # Compute the mel spectrogram
     spectrogram = librosa.feature.melspectrogram(S=magnitude**2, sr=sr, n_fft=n_fft, hop_length=hop_length)
-    log_spectrogram = librosa.power_to_db(spectrogram, ref=np.max)
+    # log_spectrogram = librosa.power_to_db(spectrogram, ref=np.max)
 
     # Only return spectrogram during training
     if save_phase:
-        return log_spectrogram, sr, magnitude, phase
+        return spectrogram, sr, magnitude, phase
     else:
-        return log_spectrogram, sr
+        return spectrogram, sr
 
 # Function to convert a spectrogram back into a .wav file using saved phase information
 def spectrogram_to_wav(spectrogram, magnitude, phase, sr, hop_length=512):
@@ -182,77 +181,27 @@ def unet_model(input_shape):
     model = keras.Model(inputs, outputs)
     return model
 
-# # Load the data
-# spectrograms, masks = load_data("clean_speech", "noisy_speech")
-# width, height = spectrograms.shape[1], spectrograms.shape[2]
+# Load the data
+spectrograms, masks = load_data("clean_speech", "noisy_speech")
+width, height = spectrograms.shape[1], spectrograms.shape[2]
 
-# # Split the data into training and validation sets
-# data_train, data_val, masks_train, masks_val = train_test_split(
-#     spectrograms, masks, test_size = 0.2, random_state = 42
-# )
-# print(masks[1])
+# Split the data into training and validation sets
+data_train, data_val, masks_train, masks_val = train_test_split(
+    spectrograms, masks, test_size = 0.2, random_state = 42
+)
+print(masks[1])
 
-# # Create and compile the UNet model
-# model = unet_model((width, height, 1))
-# model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
+# Create and compile the UNet model
+model = unet_model((width, height, 1))
+model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
 
-# # Fit the model to the data
-# model.fit(
-#     data_train,
-#     masks_train,
-#     epochs = 10,
-#     batch_size = 16,
-#     validation_data = (data_val, masks_val)
-# )
+# Fit the model to the data
+model.fit(
+    data_train,
+    masks_train,
+    epochs = 10,
+    batch_size = 16,
+    validation_data = (data_val, masks_val)
+)
 
-# model.save("denoiser.keras")
-
-model = tf.keras.models.load_model("denoiser.keras")
-
-# Function to apply the trained model to new data
-def apply_model_to_new_data(model, file_path, target_height, target_width, db_interval=-60):
-    # Convert the new audio file to a spectrogram
-    spectrogram, sr, magnitude, phase = wav_to_spectrogram(file_path, save_phase=True)
-
-    # Calculate padding
-    pad_height = target_height - spectrogram.shape[0]
-    pad_width = target_width - spectrogram.shape[1]
-
-    # Add padding to the spectrogram
-    spectrogram_padded = np.pad(spectrogram, ((0, pad_height), (0, pad_width)), mode='constant')
-
-    # # Normalize the spectrogram to [0, 1]
-    # spectrogram_normalized = (spectrogram_padded - spectrogram_padded.min()) / (spectrogram_padded.max() - spectrogram_padded.min())
-
-    # Reshape the spectrogram for model input
-    # input_data = np.expand_dims(spectrogram_normalized, axis=-1)
-    input_data = np.expand_dims(spectrogram_padded, axis=-1)
-    input_data = np.expand_dims(input_data, axis=0)  # Add batch dimension
-
-    # Apply the trained model
-    predicted_mask = model.predict(input_data)[0, :, :, 0]
-
-    # Post-process the predicted mask if needed (e.g., thresholding)
-    threshold = 0.5
-    predicted_mask_binary = (predicted_mask > threshold).astype(np.float32)
-
-    # Optionally, convert the predicted binary mask back to a time-domain signal using saved phase information
-    reconstructed_audio = spectrogram_to_wav(predicted_mask_binary, magnitude, phase, sr)
-
-    return predicted_mask_binary, reconstructed_audio, magnitude, phase, sr
-
-# Example usage:
-file_path = "MS-SNSD/CleanSpeech_training/clnsp1.wav"
-predicted_mask, reconstructed_audio, magnitude, phase, sr = apply_model_to_new_data(model, file_path, 128, 512)
-
-# Apply the predicted binary mask to the magnitude and phase
-# Ensure that predicted_mask has the same shape as magnitude
-applied_mask = np.resize(predicted_mask, magnitude.shape) * magnitude
-
-# Reconstruct the audio using the masked magnitude and original phase
-reconstructed_audio = spectrogram_to_wav(applied_mask, magnitude, phase, sr)
-
-# Save the reconstructed audio as a .wav file using scipy.io.wavfile
-output_file_path = "output_reconstructed.wav"
-display_spectrogram(reconstructed_audio, sr, 512, "reconstructed_spectrogram.png")
-wavfile.write(output_file_path, sr, reconstructed_audio.astype(np.int16))
+model.save("denoiser.keras")

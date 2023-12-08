@@ -11,6 +11,10 @@ import tensorflow as tf
 from tensorflow import keras
 from keras import layers, models
 
+clean_speech_folder = "clean_speech"
+noisy_speech_folder = "noisy_speech"
+snr_intervals = 5
+
 # Function to read a .wav file into a spectrogram
 def wav_to_spectrogram(file_path, n_fft=2048, hop_length=512, save_phase=False):
     audio, sr = librosa.load(file_path, sr=None)
@@ -40,7 +44,7 @@ def spectrogram_to_wav(spectrogram, magnitude, phase, sr, hop_length=512):
 
     return reconstructed_audio
 
-def display_spectrogram(spectrogram, sr, hop_length, save_path):
+def save_spectrogram(spectrogram, sr, hop_length, save_path):
     plt.figure(figsize=(10, 4))
 
     # Reshape the spectrogram if it is 1D
@@ -51,80 +55,62 @@ def display_spectrogram(spectrogram, sr, hop_length, save_path):
     plt.colorbar(format='%+2.0f dB')
     plt.title('Spectrogram')
     plt.savefig(save_path)
-    plt.close()  # Close the figure to release resources
+    plt.close()
 
-def save_spectrogram_visualizations(spectrograms, masks, save_folder, sr, hop_length):
-    # Create the save folder if it doesn't exist
-    if not os.path.exists(save_folder):
-        os.makedirs(save_folder)
+def save_mask(mask, file_name):
+    plt.imsave(file_name, mask, cmap="gray")
 
-    for i in range(len(spectrograms)):
-        # Display and save the spectrogram
-        spectrogram_path = os.path.join(save_folder, f'spectrogram_{i}.png')
-        display_spectrogram(spectrograms[i], sr, hop_length, spectrogram_path)
+def load_data(clean_folder, noisy_folder):
+    clean_spectrograms = []
+    noisy_spectrograms = []
 
-        # Save the binary mask as a black and white image
-        mask_path = os.path.join(save_folder, f'mask_{i}.png')
-        plt.imsave(mask_path, masks[i], cmap='gray')
-
-def load_data(clean_speech_folder, noisy_speech_folder):
-    db_interval = -60
-    max_height = 0
-    max_width = 0
-    spectrograms = []
-    masks = []
-
-    # Find the dimensions of the largest image for padding
-    for clean_file_name in os.listdir(clean_speech_folder):
-        if clean_file_name.endswith(".wav"):
-            clean_speech_path = os.path.join(clean_speech_folder, clean_file_name)
-            clean_speech_spectrogram, _ = wav_to_spectrogram(clean_speech_path)
-            height, width = clean_speech_spectrogram.shape
-            max_height = max(max_height, height)
-            max_width = max(max_width, width)
-
-    # Update to nearest power of 2 for model compatability
-    target_height = 2 ** int(np.ceil(np.log2(max_height)))
-    target_width = 2 ** int(np.ceil(np.log2(max_width)))
-
-    # Iterate through source files
-    for clean_file_name in os.listdir(clean_speech_folder):
-        if clean_file_name.endswith(".wav"):
+    # Load the clean speech files
+    for clean_file in os.listdir(clean_folder):
+        if clean_file.endswith(".wav"):
             # Load the clean speech file
-            clean_speech_path = os.path.join(clean_speech_folder, clean_file_name)
-            clean_speech_spectrogram, _ = wav_to_spectrogram(clean_speech_path)
+            clean_path = os.path.join(clean_folder, clean_file)
+            clean_spectrogram, _ = wav_to_spectrogram(clean_path)
 
-            # Calculate padding
-            pad_height = target_height - clean_speech_spectrogram.shape[0]
-            pad_width = target_width - clean_speech_spectrogram.shape[1]
+            # Add the clean file multiple times for all corresponding noisy SNR intervals
+            for i in range(snr_intervals):
+                clean_spectrograms.append(clean_spectrogram)
 
-            # Add padding to the clean speech spectrogram
-            clean_speech_spectrogram = np.pad(clean_speech_spectrogram, ((0, pad_height), (0, pad_width)), mode='constant')
+    # Load the noisy speech files
+    for noisy_file in os.listdir(noisy_folder):
+        if noisy_file.endswith(".wav"):
+            # Load the noisy speech file
+            noisy_path = os.path.join(noisy_folder, noisy_file)
+            noisy_spectrogram, _ = wav_to_spectrogram(noisy_path)
+            noisy_spectrograms.append(noisy_spectrogram)
 
-            # Create a binary mask from the clean speech file
-            mask = (clean_speech_spectrogram > db_interval).astype(np.float32)
+    # Find the largest valid spectrogram length for data and model dimensionality requirements
+    min_length = min([s.shape[1] for s in (clean_spectrograms + noisy_spectrograms)])
+    sample_length = 1 << (min_length.bit_length() - 1) if min_length > 1 else 0
 
-            # Normalize clean speech spectrogram to [0, 1]
-            clean_speech_spectrogram = (clean_speech_spectrogram - clean_speech_spectrogram.min()) / (clean_speech_spectrogram.max() - clean_speech_spectrogram.min())
+    # Crop spectrograms to have consistent length
+    for i in range(len(clean_spectrograms)):
+        clean_spectrograms[i] = clean_spectrograms[i][:, :sample_length]
+        noisy_spectrograms[i] = noisy_spectrograms[i][:, :sample_length]
 
-            # Iterate through files with corresponding clean speech file at all SNRs
-            for noisy_file_name in os.listdir(noisy_speech_folder):
-                if noisy_file_name.endswith(clean_file_name):
-                    # Load the noisy speech file
-                    noisy_speech_path = os.path.join(noisy_speech_folder, noisy_file_name)
-                    noisy_speech_spectrogram, _ = wav_to_spectrogram(noisy_speech_path)
+    # Convert the lists to numpy arrays
+    clean_spectrograms = np.array(clean_spectrograms)
+    noisy_spectrograms = np.array(noisy_spectrograms)
 
-                    # Add padding to the noisy speech spectrogram
-                    noisy_speech_spectrogram = np.pad(noisy_speech_spectrogram, ((0, pad_height), (0, pad_width)), mode='constant')
+    # Create binary masks out of the clean spectrograms
+    clean_spectrograms = np.where(clean_spectrograms >= -60, 1, 0)
 
-                    # Normalize noisy speech spectrogram to [0, 1]
-                    noisy_speech_spectrogram = (noisy_speech_spectrogram - noisy_speech_spectrogram.min()) / (noisy_speech_spectrogram.max() - noisy_speech_spectrogram.min())
+    # Save images for debugging
+    for i in range(len(clean_spectrograms)):
+        save_spectrogram(noisy_spectrograms[i], 16000, 512, f"saved_spects/{i}")
+        save_mask(clean_spectrograms[i], f"saved_masks/{i}.png")
 
-                    # Store the results in arrays
-                    spectrograms.append(noisy_speech_spectrogram)
-                    masks.append(mask)
+    # Apply normalization to the noisy spectrograms
+    for i in range(len(noisy_spectrograms)):
+        min_val = np.min(noisy_spectrograms[i])
+        max_val = np.max(noisy_spectrograms[i])
+        noisy_spectrograms[i] = (noisy_spectrograms[i] - min_val) / (max_val - min_val)
 
-    return np.array(spectrograms), np.array(masks)
+    return clean_spectrograms, noisy_spectrograms
 
 def unet_model(input_shape):
     inputs = keras.Input(input_shape)
@@ -182,14 +168,14 @@ def unet_model(input_shape):
     return model
 
 # Load the data
-spectrograms, masks = load_data("clean_speech", "noisy_speech")
-width, height = spectrograms.shape[1], spectrograms.shape[2]
+clean_spectrograms, noisy_spectrograms = load_data("clean_speech", "noisy_speech")
+width, height = noisy_spectrograms.shape[1], noisy_spectrograms.shape[2]
 
 # Split the data into training and validation sets
-data_train, data_val, masks_train, masks_val = train_test_split(
-    spectrograms, masks, test_size = 0.2, random_state = 42
+noisy_train, noisy_val, clean_train, clean_val = train_test_split(
+    noisy_spectrograms, clean_spectrograms, test_size = 0.2, random_state = 42
 )
-print(masks[1])
+print(clean_spectrograms[1])
 
 # Create and compile the UNet model
 model = unet_model((width, height, 1))
@@ -197,11 +183,11 @@ model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy']
 
 # Fit the model to the data
 model.fit(
-    data_train,
-    masks_train,
+    noisy_train,
+    clean_train,
     epochs = 10,
     batch_size = 16,
-    validation_data = (data_val, masks_val)
+    validation_data = (noisy_val, clean_val)
 )
 
 model.save("denoiser.keras")

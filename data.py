@@ -26,23 +26,13 @@ def wav_to_spectrogram(file_path, n_fft=2048, hop_length=512, save_phase=False):
 
     # Compute the mel spectrogram
     spectrogram = librosa.feature.melspectrogram(S=magnitude**2, sr=sr, n_fft=n_fft, hop_length=hop_length)
-    # log_spectrogram = librosa.power_to_db(spectrogram, ref=np.max)
+    log_spectrogram = librosa.power_to_db(spectrogram, ref=np.max)
 
     # Only return spectrogram during training
     if save_phase:
-        return spectrogram, sr, magnitude, phase
+        return log_spectrogram, sr, magnitude, phase
     else:
-        return spectrogram, sr
-
-# Function to convert a spectrogram back into a .wav file using saved phase information
-def spectrogram_to_wav(spectrogram, magnitude, phase, sr, hop_length=512):
-    # Reconstruct the complex spectrogram using saved magnitude and phase
-    reconstructed_complex_spectrogram = magnitude * np.exp(1j * phase)
-
-    # Perform the iSTFT to obtain the reconstructed audio
-    reconstructed_audio = librosa.istft(reconstructed_complex_spectrogram, hop_length=hop_length)
-
-    return reconstructed_audio
+        return log_spectrogram, sr
 
 def save_spectrogram(spectrogram, sr, hop_length, save_path):
     plt.figure(figsize=(10, 4))
@@ -97,12 +87,7 @@ def load_data(clean_folder, noisy_folder):
     noisy_spectrograms = np.array(noisy_spectrograms)
 
     # Create binary masks out of the clean spectrograms
-    clean_spectrograms = np.where(clean_spectrograms >= -60, 1, 0)
-
-    # Save images for debugging
-    for i in range(len(clean_spectrograms)):
-        save_spectrogram(noisy_spectrograms[i], 16000, 512, f"saved_spects/{i}")
-        save_mask(clean_spectrograms[i], f"saved_masks/{i}.png")
+    masks = np.where(clean_spectrograms > -60, 1, 0)
 
     # Apply normalization to the noisy spectrograms
     for i in range(len(noisy_spectrograms)):
@@ -110,7 +95,7 @@ def load_data(clean_folder, noisy_folder):
         max_val = np.max(noisy_spectrograms[i])
         noisy_spectrograms[i] = (noisy_spectrograms[i] - min_val) / (max_val - min_val)
 
-    return clean_spectrograms, noisy_spectrograms
+    return noisy_spectrograms, masks
 
 def unet_model(input_shape):
     inputs = keras.Input(input_shape)
@@ -167,27 +152,26 @@ def unet_model(input_shape):
     model = keras.Model(inputs, outputs)
     return model
 
-# Load the data
-clean_spectrograms, noisy_spectrograms = load_data("clean_speech", "noisy_speech")
-width, height = noisy_spectrograms.shape[1], noisy_spectrograms.shape[2]
+# # Load the data
+# noisy, masks = load_data("clean_speech", "noisy_speech")
+# width, height = noisy.shape[1], noisy.shape[2]
 
-# Split the data into training and validation sets
-noisy_train, noisy_val, clean_train, clean_val = train_test_split(
-    noisy_spectrograms, clean_spectrograms, test_size = 0.2, random_state = 42
-)
-print(clean_spectrograms[1])
+# # Split the data into training and validation sets
+# noisy_train, noisy_val, masks_train, masks_val = train_test_split(
+#     noisy, masks, test_size = 0.2, random_state = 37
+# )
 
-# Create and compile the UNet model
-model = unet_model((width, height, 1))
-model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
+# # Create and compile the UNet model
+# model = unet_model((width, height, 1))
+# model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
 
-# Fit the model to the data
-model.fit(
-    noisy_train,
-    clean_train,
-    epochs = 10,
-    batch_size = 16,
-    validation_data = (noisy_val, clean_val)
-)
+# # Fit the model to the data
+# model.fit(
+#     noisy_train,
+#     masks_train,
+#     epochs = 10,
+#     batch_size = 8,
+#     validation_data = (noisy_val, masks_val)
+# )
 
-model.save("denoiser.keras")
+# model.save("denoiser.keras")

@@ -129,7 +129,7 @@ def load_data(clean_folder, noisy_folder):
     # clean_spectrograms = [np.pad(s, ((0, sample_height - s.shape[0]), (0, 0)), 'constant') for s in clean_spectrograms]
     # noisy_spectrograms = [np.pad(s, ((0, sample_height - s.shape[0]), (0, 0)), 'constant') for s in noisy_spectrograms]
 
-    # Crop spectrogram frequencies to a height of 200
+    # Crop spectrogram frequencies to a height of 208
     clean_spectrograms = [s[:sample_height, :] for s in clean_spectrograms]
     noisy_spectrograms = [s[:sample_height, :] for s in noisy_spectrograms]
 

@@ -9,6 +9,7 @@ from scipy.io import wavfile
 from sklearn.model_selection import train_test_split
 import tensorflow as tf
 from tensorflow import keras
+from keras.optimizers import Adam
 from keras import layers, models
 
 clean_speech_folder = "clean_speech"
@@ -16,23 +17,19 @@ noisy_speech_folder = "noisy_speech"
 snr_intervals = 5
 
 # Function to read a .wav file into a spectrogram
-def wav_to_spectrogram(file_path, n_fft=2048, hop_length=512, save_phase=False):
+def wav_to_spectrogram(file_path, n_fft=1024, hop_length=512, save_phase=False):
     audio, sr = librosa.load(file_path, sr=None)
     
     # Compute the complex spectrogram with magnitude and phase information
     stft_matrix = librosa.stft(audio, n_fft=n_fft, hop_length=hop_length)
-    magnitude = np.abs(stft_matrix)
+    spectrogram = np.abs(stft_matrix)
     phase = np.angle(stft_matrix)
 
-    # Compute the mel spectrogram
-    spectrogram = librosa.feature.melspectrogram(S=magnitude**2, sr=sr, n_fft=n_fft, hop_length=hop_length)
-    log_spectrogram = librosa.power_to_db(spectrogram, ref=np.max)
-
-    # Only return spectrogram during training
+    # Do not return phase during training
     if save_phase:
-        return log_spectrogram, sr, magnitude, phase
+        return spectrogram, sr, phase
     else:
-        return log_spectrogram, sr
+        return spectrogram, sr
 
 def save_spectrogram(spectrogram, sr, hop_length, save_path):
     plt.figure(figsize=(10, 4))
@@ -41,7 +38,7 @@ def save_spectrogram(spectrogram, sr, hop_length, save_path):
     if len(spectrogram.shape) == 1:
         spectrogram = np.expand_dims(spectrogram, axis=0)
 
-    librosa.display.specshow(spectrogram, sr=sr, hop_length=hop_length, x_axis='time', y_axis='mel')
+    librosa.display.specshow(spectrogram, sr=sr, hop_length=hop_length, x_axis='time', y_axis='linear')
     plt.colorbar(format='%+2.0f dB')
     plt.title('Spectrogram')
     plt.savefig(save_path)
@@ -57,7 +54,6 @@ def load_data(clean_folder, noisy_folder):
     # Load the clean speech files
     for clean_file in os.listdir(clean_folder):
         if clean_file.endswith(".wav"):
-            # Load the clean speech file
             clean_path = os.path.join(clean_folder, clean_file)
             clean_spectrogram, _ = wav_to_spectrogram(clean_path)
 
@@ -68,34 +64,51 @@ def load_data(clean_folder, noisy_folder):
     # Load the noisy speech files
     for noisy_file in os.listdir(noisy_folder):
         if noisy_file.endswith(".wav"):
-            # Load the noisy speech file
             noisy_path = os.path.join(noisy_folder, noisy_file)
             noisy_spectrogram, _ = wav_to_spectrogram(noisy_path)
             noisy_spectrograms.append(noisy_spectrogram)
 
-    # Find the largest valid spectrogram length for data and model dimensionality requirements
+    # Find the largest valid spectrogram time length for model dimensionality requirements
     min_length = min([s.shape[1] for s in (clean_spectrograms + noisy_spectrograms)])
     sample_length = 1 << (min_length.bit_length() - 1) if min_length > 1 else 0
 
-    # Crop spectrograms to have consistent length
+    # Crop spectrogram times to have consistent length
     for i in range(len(clean_spectrograms)):
         clean_spectrograms[i] = clean_spectrograms[i][:, :sample_length]
         noisy_spectrograms[i] = noisy_spectrograms[i][:, :sample_length]
+
+    # Find the smallest valid spectrogram frequency height for model requirements
+    max_height = max([s.shape[0] for s in (clean_spectrograms + noisy_spectrograms)])
+    sample_height = 1 << max_height.bit_length() if max_height & (max_height - 1) else max_height
+    sample_height = 1040 # Optimized demonstration data set height
+
+    # Pad spectrogram frequencies
+    clean_spectrograms = [np.pad(s, ((0, sample_height - s.shape[0]), (0, 0)), 'constant') for s in clean_spectrograms]
+    noisy_spectrograms = [np.pad(s, ((0, sample_height - s.shape[0]), (0, 0)), 'constant') for s in noisy_spectrograms]
 
     # Convert the lists to numpy arrays
     clean_spectrograms = np.array(clean_spectrograms)
     noisy_spectrograms = np.array(noisy_spectrograms)
 
-    # Create binary masks out of the clean spectrograms
-    masks = np.where(clean_spectrograms > -60, 1, 0)
+    # Create binary masks at >95% out of the clean spectrograms
+    masks = np.where(clean_spectrograms > np.percentile(clean_spectrograms, 95), 1, 0)
+
+    # Visualization
+    # save_spectrogram(clean_spectrograms[1], 16000, 512, "clean.png")
+    # save_mask(clean_spectrograms[1], "clean_spect.png")
+    # print(clean_spectrograms[1])
+    # save_mask(masks[1], "mask.png")
+    print(masks[1])
 
     # Apply normalization to the noisy spectrograms
     for i in range(len(noisy_spectrograms)):
         min_val = np.min(noisy_spectrograms[i])
         max_val = np.max(noisy_spectrograms[i])
         noisy_spectrograms[i] = (noisy_spectrograms[i] - min_val) / (max_val - min_val)
+    
+    print(noisy_spectrograms[i])
 
-    return noisy_spectrograms, masks
+    return noisy_spectrograms, np.array(masks)
 
 def unet_model(input_shape):
     inputs = keras.Input(input_shape)
@@ -152,26 +165,34 @@ def unet_model(input_shape):
     model = keras.Model(inputs, outputs)
     return model
 
-# # Load the data
-# noisy, masks = load_data("clean_speech", "noisy_speech")
-# width, height = noisy.shape[1], noisy.shape[2]
+# Load the data
+noisy, masks = load_data("clean_speech", "noisy_speech")
+width, height = noisy.shape[1], noisy.shape[2]
 
-# # Split the data into training and validation sets
-# noisy_train, noisy_val, masks_train, masks_val = train_test_split(
-#     noisy, masks, test_size = 0.2, random_state = 37
-# )
+# Split the data into training and validation sets
+noisy_train, noisy_val, masks_train, masks_val = train_test_split(
+    noisy, masks, test_size = 0.2, random_state = 42
+)
 
-# # Create and compile the UNet model
-# model = unet_model((width, height, 1))
-# model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
+# Create and compile the UNet model
+model = unet_model((width, height, 1))
+optimizer = Adam(learning_rate=0.0001)
+model.compile(optimizer=optimizer, loss='binary_crossentropy', metrics=['accuracy'])
 
-# # Fit the model to the data
-# model.fit(
-#     noisy_train,
-#     masks_train,
-#     epochs = 10,
-#     batch_size = 8,
-#     validation_data = (noisy_val, masks_val)
-# )
+# Debugging info for model dimensions
+print(f"Noisy Train Shape: {noisy_train.shape}")
+print(f"Noisy Validation Shape: {noisy_val.shape}")
+print(f"Masks Train Shape: {masks_train.shape}")
+print(f"Masks Validation Shape: {masks_val.shape}")
 
-# model.save("denoiser.keras")
+# Fit the model to the data
+model.fit(
+    noisy_train,
+    masks_train,
+    epochs = 10,
+    batch_size = 2,
+    validation_data = (noisy_val, masks_val)
+)
+
+model.summary()
+model.save("denoiser.keras")

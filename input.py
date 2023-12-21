@@ -1,39 +1,36 @@
 import numpy as np
 from tensorflow import keras
-from data import wav_to_spectrogram, save_spectrogram
 from scipy.io import wavfile
 import librosa
 
-sample_length = 256
+sample_length = 512  # Update this based on your model's input size
+sample_height = 1040  # Update this based on your model's input size
 
 # Load the trained model
 model = keras.models.load_model("denoiser.keras")
 
-def spectrogram_to_wav(spectrogram, min_val, max_val, initial_phase, sr, n_fft=2048, hop_length=512, n_iter=100):
-    # Denormalize the spectrogram
-    spectrogram = (spectrogram * (max_val - min_val)) + min_val
+# Function to read a .wav file into a spectrogram
+def wav_to_spectrogram(file_path, n_fft=1024, hop_length=512, save_phase=False):
+    audio, sr = librosa.load(file_path, sr=None)
+    
+    # Compute the complex spectrogram with magnitude and phase information
+    stft_matrix = librosa.stft(audio, n_fft=n_fft, hop_length=hop_length)
+    spectrogram = np.abs(stft_matrix)
+    phase = np.angle(stft_matrix)
 
-    # Convert from mel back to original power
-    spectrogram = librosa.db_to_power(spectrogram)
+    # Do not return phase during training
+    if save_phase:
+        return spectrogram, sr, phase
+    else:
+        return spectrogram, sr
 
-    # Get the approximate magnitude from the inverse
-    magnitude = librosa.feature.inverse.mel_to_stft(spectrogram, sr=sr, n_fft=n_fft)
-
-    # Combine magnitude and phase to form the complex spectrogram
-    complex_spectrogram = magnitude * np.exp(1j * phase)
-
-    # Perform the inverse STFT
-    reconstructed_audio = librosa.istft(complex_spectrogram, hop_length=hop_length)
-
-    return reconstructed_audio
-
-def preprocess_audio(file_path):
+def preprocess_audio(file_path, sample_length, sample_height):
     # Convert the audio file to a spectrogram and save the phase
-    spectrogram, sr, magnitude, phase = wav_to_spectrogram(file_path, n_fft=2048, hop_length=512, save_phase=True)
+    spectrogram, sr, phase = wav_to_spectrogram(file_path, n_fft=2048, hop_length=512, save_phase=True)
 
-    # Crop the spectrogram
-    cropped_spectrogram = spectrogram[:, :sample_length]
-    cropped_phase = phase[:, :sample_length]
+    # Crop or pad the spectrogram and phase to the sample length and height
+    cropped_spectrogram = np.pad(spectrogram[:, :sample_length], ((0, sample_height - spectrogram.shape[0]), (0, 0)), 'constant')
+    cropped_phase = np.pad(phase[:, :sample_length], ((0, sample_height - phase.shape[0]), (0, 0)), 'constant')
 
     # Normalize the cropped spectrogram
     min_val = np.min(cropped_spectrogram)
@@ -42,18 +39,22 @@ def preprocess_audio(file_path):
 
     return normalized_spectrogram, sr, cropped_phase, min_val, max_val
 
-# Function to apply the mask and convert back to audio
-def apply_mask_and_reconstruct(noisy_spectrogram, predicted_mask, sr, phase):
-    # Apply the mask
-    denoised_spectrogram = noisy_spectrogram * predicted_mask
+def reconstruct_audio(predicted_mask, original_spectrogram, phase, sr, min_val, max_val, hop_length=512):
+    # Denormalized mask
+    # predicted_mask = predicted_mask * (max_val - min_val) + min_val
+
     print(predicted_mask)
 
-    save_spectrogram(denoised_spectrogram, sr, 512, "prediction.png")
+    # Apply the mask to the original spectrogram
+    denoised_spectrogram = original_spectrogram * predicted_mask
 
-    # Convert back to audio
-    audio = spectrogram_to_wav(denoised_spectrogram, min_val, max_val, phase, sr)
+    # Convert magnitude and phase to the complex spectrogram
+    complex_spectrogram = denoised_spectrogram * np.exp(1j * phase)
 
-    return audio
+    # Perform the inverse STFT
+    reconstructed_audio = librosa.istft(complex_spectrogram, hop_length=hop_length)
+
+    return reconstructed_audio
 
 def save_wav_file(audio, sr, file_name):
     # Normalize the audio to the -1.0 to 1.0 range
@@ -67,23 +68,22 @@ def save_wav_file(audio, sr, file_name):
     # Save the audio file
     wavfile.write(file_name, sr, scaled_audio)
 
-# Predicting on new data
-new_file_path = "noisy_speech/noisy38_SNRdb_0.0_clnsp38.wav"
-new_spectrogram, sr, phase, min_val, max_val = preprocess_audio(new_file_path)
+new_file_path = "noisy_speech/noisy22_SNRdb_0.0_clnsp22.wav"
 
-# Reshape the spectrogram for prediction (add batch and channel dimensions)
-new_spectrogram = new_spectrogram[np.newaxis, ..., np.newaxis]
+# Predicting on new data
+normalized_spectrogram, sr, phase, min_val, max_val = preprocess_audio(new_file_path, sample_length, sample_height)
+
+# Reshape the spectrogram for prediction
+normalized_spectrogram_reshaped = normalized_spectrogram[np.newaxis, ..., np.newaxis]
 
 # Predict the mask
-predicted_mask = model.predict(new_spectrogram)
+predicted_mask = model.predict(normalized_spectrogram_reshaped)
 
-# Post-process the prediction (remove batch dimension)
+# Post-process the prediction
 predicted_mask = predicted_mask.squeeze()
-new_spectrogram = new_spectrogram.squeeze()
 
-save_spectrogram(new_spectrogram, sr, 512, "input.png")
+# Reconstruct the audio using the original spectrogram and the predicted mask
+reconstructed_audio = reconstruct_audio(predicted_mask, normalized_spectrogram, phase, min_val, max_val, sr)
 
-# Apply the mask and reconstruct the audio
-denoised_audio = apply_mask_and_reconstruct(new_spectrogram, predicted_mask, sr, phase)
-
-save_wav_file(denoised_audio, sr, "output.wav")
+# Save the reconstructed audio
+save_wav_file(reconstructed_audio, sr, "output.wav")

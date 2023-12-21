@@ -18,7 +18,17 @@ My approach followed this general outline:
 
 The Microsoft Scalable Noisy Speech Dataset (MS-SNSD) is a comprehensive audio dataset that features recordings sampled at 16 kHz and stored as .wav files. It includes short clips of various researchers and practitioners reading excerpts from literature, ensuring a diverse representation in terms of gender and accents. The dataset also has a range of background noises from different sources, including air conditioners, babble, copy machines, typing, and vacuum cleaners. I merged together clips of each type to simulate speech with natural background noise, logging the corresponding clean speech files to use as binary masks. I then fed this data into a U-Net model, using the masks as labels.
 
+A grayscale representation of the preprocessed spectrogram for a clean data file.
+![A grayscale representation of the preprocessed spectrogram for a clean data file.](clean.png)  
+The resulting binary mask. Note that these images are restricted to lower frequencies corresponding to the human voice's range.  
+![The resulting binary mask. Note that these images are restricted to lower frequencies corresponding to the human voice's range.](mask.png)
+
 When making predictions on new data using the model, I ensured that I applied the same transformations to the input data as I did when training the model. I used the result to determine which values should be entirely omitted from the resulting spectrogram. Then, I explored a few options for reconstructing the STFT and resulting audio file from the prediction. One option was to use the saved phase information directly. Another was to iteratively improve a phase information estimate to match the magnitude spectrogram. Finally, a trained neural vocoder can predict these values for reconstruction.
+
+A noisy input file.
+![A noisy input file.](input.png)  
+The resulting prediction spectrogram.
+![The resulting prediction spectrogram.](prediction.png)
 
 In terms of evaluation, most speech denoising competitions use subjective evalution from a large number of volunteers. However, I do not have access to this platform. Luckily, Microsoft developed DNSMOS P.835, which is a machine learning model trained on past competitions. This is a promising method of evaluation. Unfortunately, I do not have access to it. Regardless, SDR can be used to evaluate the performance.
 

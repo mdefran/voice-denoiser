@@ -1,7 +1,7 @@
 import librosa
 import librosa.display
 import matplotlib
-matplotlib.use('Agg')  # Set the backend to 'Agg'
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import numpy as np
 import os
@@ -16,8 +16,19 @@ clean_speech_folder = "clean_speech"
 noisy_speech_folder = "noisy_speech"
 snr_intervals = 5
 
-# Function to read a .wav file into a spectrogram
 def wav_to_spectrogram(file_path, n_fft=1024, hop_length=512, save_phase=False):
+    """
+    Convert a .wav file to a spectrogram.
+
+    Parameters:
+    - file_path (str): Path to the .wav file.
+    - n_fft (int): Number of FFT components.
+    - hop_length (int): Number of audio samples between adjacent STFT columns.
+    - save_phase (bool): Whether to return the phase information.
+
+    Returns:
+    - tuple: A tuple containing the spectrogram and sampling rate. If save_phase is True, also includes the phase.
+    """
     audio, sr = librosa.load(file_path, sr=None)
     
     # Compute the complex spectrogram with magnitude and phase information
@@ -31,23 +42,55 @@ def wav_to_spectrogram(file_path, n_fft=1024, hop_length=512, save_phase=False):
     else:
         return spectrogram, sr
 
-def save_spectrogram(spectrogram, sr, hop_length, save_path):
+def save_spectrogram(spectrogram, sr, n_fft, hop_length, save_path):
+    """
+    Save a cropped spectrogram as an image file.
+
+    Parameters:
+    - spectrogram (ndarray): Cropped spectrogram data to be saved.
+    - sr (int): Sampling rate of the audio used to create the original spectrogram.
+    - n_fft (int): Number of FFT components used to create the original spectrogram.
+    - hop_length (int): Hop length used in the STFT.
+    - save_path (str): Path where the image will be saved.
+    """
     plt.figure(figsize=(10, 4))
 
     # Reshape the spectrogram if it is 1D
     if len(spectrogram.shape) == 1:
         spectrogram = np.expand_dims(spectrogram, axis=0)
 
-    librosa.display.specshow(spectrogram, sr=sr, hop_length=hop_length, x_axis='time', y_axis='linear')
+    # Calculate the frequency scale for the cropped spectrogram
+    freqs = np.linspace(0, sr / 2, n_fft // 2 + 1)
+    cropped_freqs = freqs[:spectrogram.shape[0]]
+
+    librosa.display.specshow(spectrogram, sr=sr, hop_length=hop_length, x_axis='time', y_axis='linear', fmin=cropped_freqs[0], fmax=cropped_freqs[-1])
     plt.colorbar(format='%+2.0f dB')
     plt.title('Spectrogram')
     plt.savefig(save_path)
     plt.close()
 
+
 def save_mask(mask, file_name):
+    """
+    Save a binary mask image.
+
+    Parameters:
+    - mask (ndarray): Binary mask data.
+    - file_name (str): Name or path of the file where the mask will be saved.
+    """
     plt.imsave(file_name, mask, cmap="gray")
 
 def load_data(clean_folder, noisy_folder):
+    """
+    Load and preprocess spectrogram data from clean and noisy speech files.
+
+    Parameters:
+    - clean_folder (str): Directory containing clean speech .wav files.
+    - noisy_folder (str): Directory containing noisy speech .wav files.
+
+    Returns:
+    - tuple: A tuple containing arrays of noisy spectrograms and corresponding binary masks.
+    """
     clean_spectrograms = []
     noisy_spectrograms = []
 
@@ -80,11 +123,15 @@ def load_data(clean_folder, noisy_folder):
     # Find the smallest valid spectrogram frequency height for model requirements
     max_height = max([s.shape[0] for s in (clean_spectrograms + noisy_spectrograms)])
     sample_height = 1 << max_height.bit_length() if max_height & (max_height - 1) else max_height
-    sample_height = 1040 # Optimized demonstration data set height
+    sample_height = 208 # Optimized demonstration data set height
 
     # Pad spectrogram frequencies
-    clean_spectrograms = [np.pad(s, ((0, sample_height - s.shape[0]), (0, 0)), 'constant') for s in clean_spectrograms]
-    noisy_spectrograms = [np.pad(s, ((0, sample_height - s.shape[0]), (0, 0)), 'constant') for s in noisy_spectrograms]
+    # clean_spectrograms = [np.pad(s, ((0, sample_height - s.shape[0]), (0, 0)), 'constant') for s in clean_spectrograms]
+    # noisy_spectrograms = [np.pad(s, ((0, sample_height - s.shape[0]), (0, 0)), 'constant') for s in noisy_spectrograms]
+
+    # Crop spectrogram frequencies to a height of 200
+    clean_spectrograms = [s[:sample_height, :] for s in clean_spectrograms]
+    noisy_spectrograms = [s[:sample_height, :] for s in noisy_spectrograms]
 
     # Convert the lists to numpy arrays
     clean_spectrograms = np.array(clean_spectrograms)
@@ -94,10 +141,10 @@ def load_data(clean_folder, noisy_folder):
     masks = np.where(clean_spectrograms > np.percentile(clean_spectrograms, 95), 1, 0)
 
     # Visualization
-    # save_spectrogram(clean_spectrograms[1], 16000, 512, "clean.png")
-    # save_mask(clean_spectrograms[1], "clean_spect.png")
-    # print(clean_spectrograms[1])
-    # save_mask(masks[1], "mask.png")
+    save_spectrogram(clean_spectrograms[1], 16000, 1024, 512, "clean.png")
+    save_mask(clean_spectrograms[1], "clean_spect.png")
+    print(clean_spectrograms[1])
+    save_mask(masks[1], "mask.png")
     print(masks[1])
 
     # Apply normalization to the noisy spectrograms
@@ -111,6 +158,15 @@ def load_data(clean_folder, noisy_folder):
     return noisy_spectrograms, np.array(masks)
 
 def unet_model(input_shape):
+    """
+    Create a U-Net model for spectrogram noise reduction.
+
+    Parameters:
+    - input_shape (tuple): Shape of the input spectrograms.
+
+    Returns:
+    - keras.Model: The constructed U-Net model.
+    """
     inputs = keras.Input(input_shape)
 
     # Downsample
@@ -176,7 +232,7 @@ noisy_train, noisy_val, masks_train, masks_val = train_test_split(
 
 # Create and compile the UNet model
 model = unet_model((width, height, 1))
-optimizer = Adam(learning_rate=0.0001)
+optimizer = Adam(learning_rate=0.001)
 model.compile(optimizer=optimizer, loss='binary_crossentropy', metrics=['accuracy'])
 
 # Debugging info for model dimensions
@@ -190,9 +246,10 @@ model.fit(
     noisy_train,
     masks_train,
     epochs = 10,
-    batch_size = 2,
+    batch_size = 8,
     validation_data = (noisy_val, masks_val)
 )
 
+# Save details
 model.summary()
 model.save("denoiser.keras")
